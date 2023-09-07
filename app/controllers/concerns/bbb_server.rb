@@ -44,8 +44,13 @@ module BbbServer
 
   # Returns a URL to join a user into a meeting.
   def join_path(room, name, options = {}, uid = nil)
-    # Create the meeting, even if it's running
-    start_session(room, options)
+    # Create the meeting, only if it's not running
+    meeting_info = bbb.get_meeting_info(room.bbb_id, password: room.moderator_pw)
+    createTime = meeting_info[:createTime]
+    if meeting_info[:messageKey] == "notFound"
+      start_session(room, options)
+      createTime = room.last_session.to_datetime.strftime("%Q")
+    end
 
     # Determine the password to use when joining.
     password = options[:user_is_moderator] ? room.moderator_pw : room.attendee_pw
@@ -55,7 +60,7 @@ module BbbServer
     join_opts[:userID] = uid if uid
     join_opts[:join_via_html5] = true
     join_opts[:avatarURL] = options[:avatarURL] if options[:avatarURL].present?
-    join_opts[:createTime] = room.last_session.to_datetime.strftime("%Q") if room.last_session
+    join_opts[:createTime] = createTime
 
     bbb_server.join_meeting_url(room.bbb_id, name, password, join_opts)
   end
@@ -70,7 +75,7 @@ module BbbServer
       moderatorOnlyMessage: options[:moderator_message],
       "meta_#{META_LISTED}": options[:recording_default_visibility] || false,
       "meta_bbb-origin-version": Greenlight::Application::VERSION,
-      "meta_bbb-origin": "Greenlight",
+      "meta_bbb-origin": "Greenlight-BigBlueMeeting",
       "meta_bbb-origin-server-name": options[:host]
     }
 
@@ -89,9 +94,18 @@ module BbbServer
         bbb_server.create_meeting(room.name, room.bbb_id, create_options)
       end
 
+      if meeting[:messageKey] == 'idNotUnique'
+        raise BigBlueButton::BigBlueButtonException.new('idNotUnique')
+      end
+
       unless meeting[:messageKey] == 'duplicateWarning'
         room.update_attributes(sessions: room.sessions + 1, last_session: DateTime.strptime(meeting[:createTime].to_s, "%Q"))
       end
+
+      if meeting[:messageKey] == 'duplicateWarning'
+        room.update_attributes(last_session: DateTime.strptime(meeting[:createTime].to_s, "%Q"))
+      end
+
     rescue BigBlueButton::BigBlueButtonException => e
       puts "BigBlueButton failed on create: #{e.key}: #{e.message}"
       raise e
